@@ -1,0 +1,243 @@
+---
+title: "Practium_1"
+author: "Venkata Sai Manikanata Buddha-001571642"
+date: "07/07/2021"
+output: pdf_document
+---
+```{r connect2DB}
+
+# 1. Library
+library(RMySQL)
+
+# 2. Settings
+db_user <- 'user'
+db_password <- 'password'
+db_name <- 'cs5200-db-1'
+db_table <- 'courses'
+db_host <- 'dbs.cpdqe3xnfxiz.us-east-2.rds.amazonaws.com' # AWS Host
+db_port <- 3306
+```
+
+
+```{sql connection=dbcon}
+SET foreign_key_checks = 0
+
+```
+
+Let's load a CSV file and then store that CSV file into tables in the database.
+
+```{r loadCSV}
+fn = "BirdStrikesData.csv"
+
+df.raw <- read.csv(file = fn,
+                   header = T,
+                   stringsAsFactors = F)
+df.raw<-df.raw[!(is.na(df.raw$Aircraft..Type) | df.raw$Aircraft..Type=="" | is.na(df.raw$Airport..Name) | df.raw$Airport..Name==""|is.na(df.raw$Aircraft..Make.Model) | df.raw$Aircraft..Make.Model=="" | is.na(df.raw$FlightDate)|df.raw$FlightDate==""|is.na(df.raw$Aircraft..Airline.Operator)|is.na(df.raw$Aircraft..Number.of.engines.)| df.raw$Aircraft..Number.of.engines.==""|is.na(df.raw$Effect..Impact.to.flight)|df.raw$Effect..Impact.to.flight==""|is.na(df.raw$When..Phase.of.flight)|df.raw$When..Phase.of.flight==""),]
+```
+
+Let's inspect the raw data we read from the CSV.
+
+```{r}
+head(df.raw, 3)
+str(df.raw)
+```
+
+
+
+```{sql connection=dbcon}
+
+drop table IF EXISTS records;
+
+```
+
+```{sql connection=dbcon}
+drop table IF EXISTS flightdetails;
+```
+
+```{sql connection=dbcon}
+drop table IF EXISTS strikedetails;
+
+```
+
+
+```{sql connection=dbcon}
+CREATE TABLE flightdetails(
+Fid INTEGER PRIMARY KEY,
+Aircraft_Type TEXT NOT NULL,
+Aircraft_Make_Model TEXT NOT NULL,
+Aircraft_Number_of_engines TEXT NOT NULL,
+Airport_Name TEXT NOT NULL,
+Aircraft_Airline_Operator TEXT NOT NULL,
+Origin_State TEXT NOT NULL
+);
+
+```
+
+
+
+```{sql connection=dbcon}
+CREATE TABLE strikedetails(
+Sid INTEGER PRIMARY KEY,
+FlightDate TEXT NOT NULL,
+Effect_Indicated_Damage TEXT NOT NULL,
+Effect_Impact_to_flight TEXT NOT NULL,
+When_Phase_of_flight TEXT NOT NULL ,
+Conditions_Precipitation TEXT NOT NULL,
+Fid INTEGER,
+FOREIGN KEY(Fid) REFERENCES flightdetails(Fid)
+);
+```
+
+
+
+```{sql connection=dbcon}
+CREATE TABLE records(
+RecordID INTEGER PRIMARY KEY,
+Sid INTEGER,
+FOREIGN KEY(Sid) REFERENCES strikedetails(Sid)
+);
+
+```
+
+```{r}
+detach("package:RMySQL", unload=TRUE)
+library(sqldf)
+
+df.flights <- sqldf::sqldf("select 1 as Fid, `Aircraft..Type`,
+                           `Aircraft..Make.Model`,
+                           `Aircraft..Number.of.engines.`,
+                           `Airport..Name`,
+                           `Aircraft..Airline.Operator`,
+                           `Origin.State` from `df.raw`")
+
+# assign an artificial PK
+n.flights <- nrow(df.flights)
+df.flights[,1] <- 200+seq(1, n.flights)
+
+##df.flights
+
+#Changing the format of date in FlightDate Column
+df.raw$FlightDate <- as.Date(df.raw$FlightDate,format = "%m/%d/%Y %H:%M")
+
+
+df.strike <- sqldf::sqldf("select 1 as Sid, `FlightDate`,
+                           `Effect..Indicated.Damage`,
+                           `Effect..Impact.to.flight`,
+                           `When..Phase.of.flight`,
+                           `Conditions..Precipitation`,
+                            1 as Fid from `df.raw`")
+n.strike <- nrow(df.strike)
+df.strike[,1] <- 100+seq(1, n.flights)
+##df.strike
+
+
+df.record <- sqldf::sqldf("select `ï..Record.ID`, 1 as Sid from `df.raw`")
+##df.record
+
+```
+
+
+```{r}
+# assigning the FK to the 
+# correct PK
+
+# process each row  one by one
+for (r in 1:n.strike) {
+  # find the airline PK for that flight in the airlines table
+  a <- df.flights$Fid[which(df.flights$Aircraft..Type == df.raw$Aircraft..Type[r] &
+                               df.flights$Aircraft..Make.Model == df.raw$Aircraft..Make.Model[r] &
+                               df.flights$Aircraft..Number.of.engines. == df.raw$Aircraft..Number.of.engines.[r] &
+                              df.flights$Airport..Name == df.raw$Airport..Name[r] &
+                              df.flights$Aircraft..Airline.Operator == df.raw$Aircraft..Airline.Operator[r] &
+                              df.flights$Origin.State == df.raw$Origin.State[r])]
+  df.strike$Fid[r] <- a
+}
+
+n.record <- nrow(df.record)
+for (r in 1:n.record) {
+  # find the airline PK for that flight in the airlines table
+  b <- df.strike$Sid[which(df.strike$FlightDate == df.raw$FlightDate[r] &
+                               df.strike$Effect..Indicated.Damage == df.raw$Effect..Indicated.Damage[r] &
+                               df.strike$Effect..Impact.to.flight == df.raw$Effect..Impact.to.flight[r] &
+                              df.strike$When..Phase.of.flight == df.raw$When..Phase.of.flight[r] &
+                              df.strike$Conditions..Precipitation == df.raw$Conditions..Precipitation[r])]
+                              
+  df.record$Sid[r] <- b
+}
+
+```
+
+```{sql connection=dbcon}
+SET foreign_key_checks = 0
+
+```
+
+```{r loadDataByRow}
+
+library(DBI)
+n.flights <- nrow(df.flights)
+for (r in 1:n.flights){
+  rs <- dbSendStatement(conn = dbcon, 
+                        statement = "insert into FlightDetails values (?,?,?,?,?,?,?)",
+                        params = list(df.flights$Fid[r],
+                                df.flights$Aircraft..Type[r],
+                                df.flights$Aircraft..Make.Model[r],
+                                df.flights$Aircraft..Number.of.engines.[r],
+                                df.flights$Airport..Name[r],
+                                df.flights$Aircraft..Airline.Operator[r],
+                                df.flights$Origin.State[r]),
+                        immediate = T)
+  dbClearResult(rs)
+}
+
+n.strike <- nrow(df.strike)
+for (r in 1:n.strike) {
+  rs <- dbSendStatement(conn = dbcon, 
+                        statement = "insert into StrikeDetails values (?,?,?,?,?,?,?)",
+                        params = list(df.strike$Sid[r],
+                                df.strike$FlightDate[r],
+                                df.strike$Effect..Indicated.Damage[r],
+                                df.strike$Effect..Impact.to.flight[r],
+                                df.strike$When..Phase.of.flight[r],
+                                df.strike$Conditions..Precipitation[r],
+                                df.strike$Fid[r]),
+                        immediate = T)
+  dbClearResult(rs)
+}
+
+```
+
+
+
+
+
+```{sql connection=dbcon}
+Select * from flightdetails;
+
+```
+
+```{sql connection=dbcon}
+Select * from strikedetails;
+
+```
+
+```{sql connection=dbcon}
+Select * from records;
+
+```
+```{sql connection=dbcon}
+Select `Airport..Name`, count(*) as BirdStrikes from flightdetails
+GROUP BY `Airport..Name` ORDER BY BirdStrikes desc LIMIT 1;
+```
+
+```{sql connection=dbcon}
+
+select `Aircraft..Airline.Operator`, count(*) as BirdStrikes from flightdetails, strikedetails
+WHERE FlightDetails.Fid = StrikeDetails.Fid AND `When..Phase.of.flight` IN ('Take-off-run','Climb')
+GROUP BY `Aircraft..Airline.Operator`;
+
+```
+
+
+
+
